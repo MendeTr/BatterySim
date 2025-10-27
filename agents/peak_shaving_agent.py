@@ -94,6 +94,47 @@ class PeakShavingAgent(BaseAgent):
         # Decision tree based on peak situation
         recommendation = None
 
+        # ========== NEW: CONTINUOUS DISCHARGE STRATEGY ==========
+        # During E.ON hours, proactively discharge to keep grid import < 5 kW
+        # This is MORE IMPORTANT than waiting for threshold breach!
+        # Rationale: Spikes are instantaneous (2-5 min), battery has 2-3 sec delay
+        # By the time we detect threshold breach, E.ON has already measured the peak
+        if context.consumption_kw > 3.0:  # ANY moderate consumption during E.ON hours
+            # How much do we need to discharge to hit 5 kW target?
+            ideal_discharge = context.consumption_kw - self.target_peak_kw
+
+            # Can we actually discharge this much?
+            available = context.soc_kwh - context.min_soc_kwh
+            actual_discharge = min(ideal_discharge, available, context.max_discharge_kw)
+
+            if actual_discharge > 0.5:  # Worth it (> 0.5 kWh)
+                # Calculate value (prevent peak shaving cost)
+                # Even small reductions are valuable: 60 SEK/kW/month = 2 SEK/kWh
+                kw_reduction = min(actual_discharge, context.consumption_kw - self.target_peak_kw)
+                monthly_value = max(0, kw_reduction) * 60.0  # SEK/kW/month
+
+                return AgentRecommendation(
+                    agent_name=self.name,
+                    action=AgentAction.DISCHARGE,
+                    kwh=actual_discharge,
+                    confidence=0.85,  # High confidence for continuous strategy
+                    value_sek=monthly_value / 30.0,  # Daily value
+                    priority=2,  # High priority (below emergency, above arbitrage)
+                    reasoning=(
+                        f"Continuous discharge strategy: {context.consumption_kw:.1f} kW consumption "
+                        f"during E.ON hours. Discharging {actual_discharge:.1f} kWh to maintain "
+                        f"grid import < {self.target_peak_kw:.1f} kW. Target: {context.consumption_kw - actual_discharge:.1f} kW."
+                    ),
+                    is_veto=False,
+                    requires_immediate_action=False,
+                    metadata={
+                        'strategy': 'continuous_discharge',
+                        'consumption_kw': context.consumption_kw,
+                        'target_grid_import': self.target_peak_kw,
+                        'discharge_kw': actual_discharge
+                    }
+                )
+
         # Case 1: CRITICAL - About to exceed threshold (or already in top 3)
         if potential_peak_kw > threshold_kw or len(top_peaks) < 3:
             # How much do we need to discharge?

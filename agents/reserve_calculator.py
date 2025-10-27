@@ -31,7 +31,7 @@ class DynamicReserveCalculator:
         max_discharge_kw: float = 12.0,
         default_percentile: int = 95,
         safety_buffer: float = 1.15,
-        spike_duration_hours: float = 0.5,
+        spike_duration_hours: float = 1.0,  # Changed from 0.5 to 1.0: aim for continuous discharge during E.ON hours, not just spike response
         min_reserve_kwh: float = 2.0,
         max_reserve_kwh: float = 15.0
     ):

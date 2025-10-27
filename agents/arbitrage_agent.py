@@ -101,9 +101,18 @@ class ArbitrageAgent(BaseAgent):
         if current_price >= self.night_charge_threshold:
             return None  # Too expensive
 
+        # CRITICAL: Reserve 10 kWh for peak shaving during daytime
+        # This ensures battery always has capacity available for continuous discharge
+        # Even if we don't know when spikes will occur, we maintain readiness
+        PEAK_RESERVE_KWH = 10.0  # Reserve 10 kWh for daytime peak shaving
+
+        # Don't charge beyond (capacity - reserve)
+        # Example: 25 kWh capacity - 10 kWh reserve = max 15 kWh charge target
+        safe_max_soc = context.capacity_kwh - PEAK_RESERVE_KWH
+
         # CRITICAL: Check consumption forecast to reserve capacity for peak shaving
         # Don't fill battery if high consumption expected during measurement hours
-        target_soc = context.target_morning_soc_kwh
+        target_soc = min(context.target_morning_soc_kwh, safe_max_soc)
 
         if context.consumption_forecast:
             # Look at upcoming measurement hours (next 6-18 hours covers morning/day)

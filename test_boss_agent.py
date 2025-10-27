@@ -28,12 +28,12 @@ def main():
     vat_rate = 0.25
     effect_tariff = 60.0
 
-    # Use spike dataset
-    data_file = "tibber_with_spikes.csv"
+    # Use REAL user data (no artificial spikes)
+    data_file = "tibber_last12m_with_prod.csv"
 
     print(f"\n📊 Configuration:")
     print(f"  Battery: {battery_capacity} kWh, {battery_power} kW")
-    print(f"  Dataset: {data_file} (with EV + heat pump + appliance spikes)")
+    print(f"  Dataset: {data_file} (REAL user data, no artificial spikes)")
     print(f"  Effect tariff: {effect_tariff} SEK/kW/month")
 
     # Test 1: Boss Agent (Reserve-based)
