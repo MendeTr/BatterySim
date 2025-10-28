@@ -2,7 +2,8 @@
 
 **Project:** Battery ROI Calculator - Multi-Agent Architecture
 **Start Date:** 2025-10-24
-**Status:** Planning Phase
+**Last Updated:** 2025-10-28
+**Status:** Active Development - Sigenergy 24h Planning
 
 ---
 
@@ -11,6 +12,100 @@
 This roadmap outlines the implementation plan for transitioning from single-GPT planning to a multi-agent architecture with dynamic value-based decision making.
 
 **Goal:** Improve peak shaving effectiveness from 936 SEK/year to 3,000-4,500 SEK/year through intelligent battery planning.
+
+**NEW (2025-10-28)**: Implementing Sigenergy-style 24-hour proactive planning based on analysis of their AI system. See `docs/sigenergy-24h-planning.md` for full details.
+
+---
+
+## 🚀 Epic 0: Sigenergy 24h Planning Architecture (CURRENT PRIORITY)
+
+**Goal:** Implement 24-hour proactive optimization inspired by Sigenergy's AI approach
+
+**Background:** Previous attempts at peak shaving were reactive (hour-by-hour decisions). Sigenergy's analysis shows they plan the entire 24 hours at once when next-day prices are known (13:00 daily). This allows:
+- Pre-positioning battery for known peak windows
+- Charging at absolute cheapest hour (not just "cheap enough")
+- Global optimization across 24 hours (not greedy local decisions)
+
+**Reference Documents:**
+- `docs/sigenai.txt` - Detailed analysis of Sigenergy's AI system
+- `docs/Analysis_sig_vs_roi.txt` - Comparison of their approach vs ours
+- `docs/sigenergy-24h-planning.md` - Implementation plan
+
+### Story 0.1: Create 24h Optimizer ✅ COMPLETED
+**Status:** ✅ Done (2025-10-28)
+
+- [x] **Task 0.1.1:** Create `agents/daily_optimizer.py`
+  - Implements 24-hour optimization problem
+  - Input: 24h forecasts (consumption, solar, prices)
+  - Output: Hour-by-hour charge/discharge schedule
+  - Algorithm: Heuristic approach (identify cheap charging hours + peak discharge hours)
+  - File: Created `agents/daily_optimizer.py`
+
+### Story 0.2: Revert Reactive Logic 🔄 IN PROGRESS
+**Status:** ✅ 80% Done (2025-10-28)
+
+- [x] **Task 0.2.1:** Remove continuous discharge from `peak_shaving_agent.py`
+  - Removed lines 97-136 (reactive hourly discharge logic)
+  - This was a mistake - broke the 24h planning architecture
+
+- [x] **Task 0.2.2:** Restore 24h forecast horizon
+  - Changed from 3 hours → 24 hours look-ahead
+  - Allows proper planning for entire day
+
+- [ ] **Task 0.2.3:** Keep improvements that work
+  - 10 kWh peak reserve ✅
+  - No charging during E.ON hours ✅
+  - No self-consumption discharge during E.ON hours ✅
+
+### Story 0.3: Integrate 24h Planning with Boss Agent 🔄 NEXT
+**Status:** 🔄 In Progress (2025-10-28)
+
+- [ ] **Task 0.3.1:** Add `create_daily_plan()` method to `boss_agent.py`
+  - Called at 13:00 each day when prices known
+  - Uses DailyOptimizer to solve 24h problem
+  - Stores plan for execution
+
+- [ ] **Task 0.3.2:** Modify `analyze()` to execute planned actions
+  - Check if plan exists for current hour
+  - Execute: Charge X kWh or Discharge Y kWh
+  - Fall back to hourly logic if no plan
+
+- [ ] **Task 0.3.3:** Add real-time override capability
+  - Detect when actual consumption >> forecast (spike)
+  - Override plan: Emergency discharge
+  - Log override for learning
+
+### Story 0.4: Testing & Validation 📅 PENDING
+**Status:** 📅 To Do
+
+- [ ] **Task 0.4.1:** Create test script `test_daily_optimizer.py`
+  - Test optimizer with sample 24h data
+  - Verify: Charges at cheap hours, discharges at peaks
+  - Check: Respects constraints
+
+- [ ] **Task 0.4.2:** Test Boss Agent with 24h planning
+  - Run `test_boss_agent.py` with real data
+  - Compare: 24h planning vs hourly reactive
+  - Target: 2-3 kW average monthly peak reduction (2x-3x improvement)
+
+- [ ] **Task 0.4.3:** Generate comparison report
+  - Baseline: Current reactive system (1.09 kW reduction, 785 SEK/year)
+  - Target: 24h planning (2-3 kW reduction, 1500-2000 SEK/year)
+  - Document: Battery utilization, arbitrage effectiveness, peak timing
+
+### Story 0.5: Documentation & Commit 📅 PENDING
+**Status:** 🔄 Partial
+
+- [x] **Task 0.5.1:** Document plan in `docs/sigenergy-24h-planning.md` ✅
+- [x] **Task 0.5.2:** Update this roadmap ✅
+- [ ] **Task 0.5.3:** Commit & push to GitHub
+- [ ] **Task 0.5.4:** Create summary of improvements
+
+### 🎯 Success Metrics for Epic 0
+- [ ] Peak reduction: 2-3 kW average (currently 1.09 kW)
+- [ ] Annual savings: 1500-2000 SEK (currently 785 SEK)
+- [ ] Battery pre-positioned for evening peaks (17-21)
+- [ ] Charges at absolute cheapest hour (not first "cheap enough")
 
 ---
 

@@ -13,12 +13,14 @@ work within remaining constraints.
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import pandas as pd
+from datetime import date
 
 from agents.base_agent import AgentRecommendation, AgentAction, BatteryContext, RealTimeOverrideAgent
 from agents.consumption_analyzer import ConsumptionAnalyzer, DayType
 from agents.reserve_calculator import DynamicReserveCalculator, CapacityAllocation, ReserveRequirement
 from agents.peak_shaving_agent import PeakShavingAgent
 from agents.arbitrage_agent import ArbitrageAgent
+from agents.daily_optimizer import DailyOptimizer, DailyPlanInput, DailyPlanOutput
 
 
 @dataclass
@@ -62,7 +64,8 @@ class BossAgent:
         peak_shaving_agent: PeakShavingAgent,
         arbitrage_agent: ArbitrageAgent,
         real_time_override_agent: RealTimeOverrideAgent,
-        verbose: bool = False
+        verbose: bool = False,
+        enable_24h_planning: bool = True  # NEW: Enable Sigenergy-style 24h planning
     ):
         """
         Initialize Boss Agent with specialist agents.
@@ -74,6 +77,7 @@ class BossAgent:
             arbitrage_agent: Arbitrage specialist
             real_time_override_agent: Emergency override
             verbose: Print detailed reasoning
+            enable_24h_planning: Use Sigenergy-style 24h optimization (recommended)
         """
         self.analyzer = consumption_analyzer
         self.reserve_calc = reserve_calculator
@@ -87,16 +91,32 @@ class BossAgent:
         self.total_opportunity_cost_sek = 0.0
         self.reserves_by_hour: Dict[int, List[float]] = {h: [] for h in range(24)}
 
+        # 24h Planning (Sigenergy approach)
+        self.enable_24h_planning = enable_24h_planning
+        self.optimizer = DailyOptimizer() if enable_24h_planning else None
+        self.daily_plan: Optional[DailyPlanOutput] = None
+        self.plan_created_date: Optional[date] = None
+        self.plan_created_hour: int = 13  # Create plan at 13:00 when next-day prices known
+
     def analyze(self, context: BatteryContext) -> Optional[BossDecision]:
         """
         Make decision using reserve-first approach.
 
+        Sigenergy-style 24h planning (if enabled):
+        - At 13:00 daily: Create 24h optimization plan
+        - Each hour: Execute planned action
+        - Override if actual consumption >> forecast
+
+        Traditional hourly mode (fallback):
+        - Calculate reserves
+        - Get agent recommendations
+        - Choose best
+
         Process:
-        1. Calculate required peak shaving reserve
-        2. Allocate remaining capacity to agents
-        3. Get recommendations from each agent (with budget constraints)
-        4. Choose best recommendation
-        5. Track opportunity costs
+        1. Check if should create 24h plan (13:00 daily)
+        2. If plan exists, execute it (with override capability)
+        3. Otherwise, fall back to hourly reserve-first logic
+        4. Track opportunity costs
 
         Args:
             context: Current battery context
@@ -106,6 +126,45 @@ class BossAgent:
         """
         self.total_decisions += 1
 
+        # ========== SIGENERGY 24H PLANNING MODE ==========
+        if self.enable_24h_planning:
+            # Check if we should create new plan (13:00 daily when prices known)
+            current_date = context.timestamp.date()
+            if context.hour == self.plan_created_hour and current_date != self.plan_created_date:
+                if self.verbose:
+                    print(f"\n{'=' * 80}")
+                    print(f"🔮 CREATING 24H PLAN at {context.timestamp} (prices known for next day)")
+                    print(f"{'=' * 80}")
+
+                self.daily_plan = self._create_daily_plan(context)
+                self.plan_created_date = current_date
+
+                if self.verbose and self.daily_plan:
+                    print(f"\n✅ 24h Plan Created:")
+                    print(f"  {self.daily_plan.reasoning}")
+                    print(f"  Expected cost: {self.daily_plan.expected_cost:.0f} SEK")
+                    print(f"  Expected peak: {self.daily_plan.expected_peak_kw:.1f} kW")
+                    print(f"  Expected savings: {self.daily_plan.expected_savings:.0f} SEK")
+
+            # If we have a plan, execute it (with override capability)
+            if self.daily_plan:
+                return self._execute_daily_plan(context)
+
+        # ========== FALLBACK: HOURLY RESERVE-FIRST MODE ==========
+        # If no plan exists, use traditional hourly logic
+        return self._analyze_hourly(context)
+
+    def _analyze_hourly(self, context: BatteryContext) -> Optional[BossDecision]:
+        """
+        Traditional hourly reserve-first decision making (fallback mode).
+
+        This is the original Boss Agent logic:
+        1. Calculate reserves
+        2. Get agent recommendations
+        3. Choose best
+
+        Used when 24h planning is disabled or no plan exists yet.
+        """
         # STEP 1: Calculate peak shaving reserve (HIGHEST PRIORITY)
         reserve_req = self.reserve_calc.calculate_reserve(
             timestamp=context.timestamp,
@@ -224,6 +283,208 @@ class BossAgent:
         # Agents will see the reserve requirement in context and respect it
 
         return context  # For now, return as-is - agents check capacity_allocation
+
+    def _create_daily_plan(self, context: BatteryContext) -> Optional[DailyPlanOutput]:
+        """
+        Create 24-hour optimization plan (Sigenergy approach).
+
+        Called at 13:00 daily when next-day prices are known.
+        Uses DailyOptimizer to solve global optimization problem.
+
+        Args:
+            context: Current battery context with 24h forecasts
+
+        Returns:
+            DailyPlanOutput with hour-by-hour schedule, or None if failed
+        """
+        if not self.optimizer:
+            return None
+
+        try:
+            # Build optimization inputs
+            # Note: BatteryContext doesn't have solar_forecast yet - use current solar as simple forecast
+            solar_now = context.solar_production_kw if hasattr(context, 'solar_production_kw') else 0.0
+
+            # Get cost parameters from reserve calculator's value calculator
+            value_calc = self.reserve_calc.analyzer.df.iloc[0] if hasattr(self.reserve_calc, 'analyzer') else None
+
+            inputs = DailyPlanInput(
+                consumption_forecast=context.consumption_forecast[:24] if context.consumption_forecast else [context.avg_consumption_kw] * 24,
+                solar_forecast=[solar_now] * 24,  # TODO: Add proper solar forecasting later
+                price_forecast=context.spot_forecast[:24] if context.spot_forecast else [context.spot_price_sek_kwh] * 24,
+                current_soc_kwh=context.soc_kwh,
+                capacity_kwh=context.capacity_kwh,
+                min_soc_kwh=context.min_soc_kwh,
+                max_charge_kw=context.max_charge_kw,
+                max_discharge_kw=context.max_discharge_kw,
+                efficiency=context.efficiency,
+                grid_fee_sek_kwh=0.42,  # Default Swedish grid fee (will be updated from simulator)
+                energy_tax_sek_kwh=0.40,  # Default Swedish energy tax
+                vat_rate=0.25,  # Swedish VAT rate
+                effect_tariff_sek_kw_month=60.0,  # Default effect tariff
+                current_peak_threshold_kw=context.peak_threshold_kw,
+                peak_reserve_kwh=10.0,  # Reserve 10 kWh for peaks
+                is_measurement_hour=[6 <= h <= 23 for h in range(24)]  # E.ON hours
+            )
+
+            # Solve optimization
+            plan = self.optimizer.optimize_24h(inputs)
+            return plan
+
+        except Exception as e:
+            if self.verbose:
+                print(f"⚠️  Failed to create 24h plan: {e}")
+            return None
+
+    def _execute_daily_plan(self, context: BatteryContext) -> Optional[BossDecision]:
+        """
+        Execute planned action for current hour (with real-time override capability).
+
+        Args:
+            context: Current battery context
+
+        Returns:
+            BossDecision with planned action or override
+        """
+        if not self.daily_plan:
+            return None
+
+        hour_of_day = context.hour
+
+        # Check for real-time override (spike detected)
+        if self._should_override_plan(context):
+            if self.verbose:
+                print(f"\n⚠️  OVERRIDE: Actual consumption >> forecast, emergency discharge!")
+            return self._emergency_override(context)
+
+        # Get planned action for this hour
+        planned_charge = self.daily_plan.charge_schedule[hour_of_day]
+        planned_discharge = self.daily_plan.discharge_schedule[hour_of_day]
+
+        # Execute plan
+        if planned_charge > 0.5:
+            # Plan says: CHARGE
+            reasoning = f"24h Plan: Charge {planned_charge:.1f} kWh (cheap hour). {self.daily_plan.reasoning}"
+
+            return BossDecision(
+                action=AgentAction.CHARGE,
+                kwh=planned_charge,
+                chosen_agent="DailyOptimizer",
+                all_recommendations=[],
+                reserve_requirement=ReserveRequirement(
+                    required_reserve_kwh=self.daily_plan.soc_schedule[hour_of_day],
+                    risk_level="MEDIUM",
+                    reasoning="24h plan execution",
+                    percentile_used=95
+                ),
+                capacity_allocation=CapacityAllocation(
+                    total_capacity_kwh=context.capacity_kwh,
+                    current_soc_kwh=context.soc_kwh,
+                    peak_shaving_reserve_kwh=10.0,
+                    available_for_arbitrage_kwh=0.0,
+                    can_charge=True,
+                    can_discharge=False,
+                    max_charge_this_hour_kwh=planned_charge,
+                    max_discharge_this_hour_kwh=0.0,
+                    opportunity_cost_sek=0.0,
+                    reasoning="Executing 24h plan"
+                ),
+                opportunity_cost_sek=0.0,
+                reasoning=reasoning
+            )
+
+        elif planned_discharge > 0.5:
+            # Plan says: DISCHARGE
+            reasoning = f"24h Plan: Discharge {planned_discharge:.1f} kWh (peak shaving). {self.daily_plan.reasoning}"
+
+            return BossDecision(
+                action=AgentAction.DISCHARGE,
+                kwh=planned_discharge,
+                chosen_agent="DailyOptimizer",
+                all_recommendations=[],
+                reserve_requirement=ReserveRequirement(
+                    required_reserve_kwh=self.daily_plan.soc_schedule[hour_of_day],
+                    risk_level="MEDIUM",
+                    reasoning="24h plan execution",
+                    percentile_used=95
+                ),
+                capacity_allocation=CapacityAllocation(
+                    total_capacity_kwh=context.capacity_kwh,
+                    current_soc_kwh=context.soc_kwh,
+                    peak_shaving_reserve_kwh=10.0,
+                    available_for_arbitrage_kwh=0.0,
+                    can_charge=False,
+                    can_discharge=True,
+                    max_charge_this_hour_kwh=0.0,
+                    max_discharge_this_hour_kwh=planned_discharge,
+                    opportunity_cost_sek=0.0,
+                    reasoning="Executing 24h plan"
+                ),
+                opportunity_cost_sek=0.0,
+                reasoning=reasoning
+            )
+
+        else:
+            # Plan says: HOLD
+            return None
+
+    def _should_override_plan(self, context: BatteryContext) -> bool:
+        """
+        Detect if actual consumption significantly exceeds forecast (spike).
+
+        Returns True if emergency override needed.
+        """
+        if not self.daily_plan or not context.consumption_forecast:
+            return False
+
+        hour = context.hour
+        if hour >= len(context.consumption_forecast):
+            return False
+
+        planned_consumption = context.consumption_forecast[hour]
+        actual_consumption = context.consumption_kw
+
+        # If actual > 1.3x forecast AND above 10 kW, spike detected!
+        return actual_consumption > planned_consumption * 1.3 and actual_consumption > 10.0
+
+    def _emergency_override(self, context: BatteryContext) -> Optional[BossDecision]:
+        """
+        Emergency discharge to handle unexpected spike.
+
+        Uses Peak Shaving Agent to determine emergency response.
+        """
+        # Let Peak Shaving Agent handle the emergency
+        emergency_rec = self.peak_shaving.analyze(context)
+
+        if not emergency_rec:
+            return None
+
+        return BossDecision(
+            action=emergency_rec.action,
+            kwh=emergency_rec.kwh,
+            chosen_agent=f"{emergency_rec.agent_name} (OVERRIDE)",
+            all_recommendations=[emergency_rec],
+            reserve_requirement=ReserveRequirement(
+                required_reserve_kwh=0.0,
+                risk_level="CRITICAL",
+                reasoning="Emergency override - spike detected",
+                percentile_used=99
+            ),
+            capacity_allocation=CapacityAllocation(
+                total_capacity_kwh=context.capacity_kwh,
+                current_soc_kwh=context.soc_kwh,
+                peak_shaving_reserve_kwh=0.0,
+                available_for_arbitrage_kwh=0.0,
+                can_charge=False,
+                can_discharge=True,
+                max_charge_this_hour_kwh=0.0,
+                max_discharge_this_hour_kwh=emergency_rec.kwh,
+                opportunity_cost_sek=0.0,
+                reasoning="Emergency override"
+            ),
+            opportunity_cost_sek=0.0,
+            reasoning=f"OVERRIDE: {emergency_rec.reasoning}"
+        )
 
     def get_statistics(self) -> Dict:
         """Get statistics about Boss Agent decisions."""

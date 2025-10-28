@@ -69,6 +69,10 @@ def main():
     simulator_boss._initialize_boss_agent_system(historical_df)
     print(f"✓ Boss Agent trained on historical data")
 
+    # Enable verbose mode to see 24h planning messages
+    simulator_boss.boss_agent.verbose = True
+    print(f"✓ Verbose mode enabled (will show 24h planning)")
+
     print(f"\n🔄 Running Boss Agent simulation on full year...")
     df_boss, results_boss = simulator_boss.simulate_battery_operation(
         df,
@@ -84,7 +88,7 @@ def main():
     print(f"  Total cost: {results_boss['total_cost_sek']:.0f} SEK")
     print(f"  Export revenue: {results_boss['export_revenue_sek']:.0f} SEK")
     print(f"  Net cost: {results_boss['net_cost_sek']:.0f} SEK")
-    print(f"  Peak shaving savings: {results_boss['peak_shaving_savings_sek']:.0f} SEK")
+    print(f"  Effect tariff savings: {results_boss['effect_tariff_savings_sek']:.0f} SEK")
     print(f"  Peak WITHOUT battery: {results_boss['peak_import_without_battery_kw']:.2f} kW")
     print(f"  Peak WITH battery: {results_boss['peak_import_with_battery_kw']:.2f} kW")
     peak_reduction = results_boss['peak_import_without_battery_kw'] - results_boss['peak_import_with_battery_kw']
