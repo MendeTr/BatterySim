@@ -142,16 +142,21 @@ def simulate_battery():
 
         # Initialize simulator
         use_gpt = data.get('use_gpt_arbitrage', False)
-        print(f"🔧 GPT Arbitrage enabled: {use_gpt}")
+        use_multi_agent = data.get('use_multi_agent', False)
+        use_boss_agent = data.get('use_boss_agent', True)  # DEFAULT TO TRUE (24h planning enabled)
+
+        # PRIORITY: Boss Agent > Multi-Agent > GPT
+        # If Boss Agent is enabled, disable GPT (Boss Agent is better)
+        if use_boss_agent and use_gpt:
+            print(f"ℹ️  Boss Agent enabled - ignoring GPT checkbox (Boss Agent uses LP optimizer, better than GPT)")
+            use_gpt = False
+
+        print(f"🔧 GPT Arbitrage: {use_gpt}")
+        print(f"🤖 Multi-Agent mode: {use_multi_agent}")
+        print(f"👔 Boss Agent mode (24h planning): {use_boss_agent}")
 
         # Reset progress
         simulation_progress = {'percent': 0, 'message': 'Starting simulation...', 'is_running': True}
-
-        # Check if multi-agent mode is requested
-        use_multi_agent = data.get('use_multi_agent', False)
-        use_boss_agent = data.get('use_boss_agent', True)  # DEFAULT TO TRUE (24h planning enabled)
-        print(f"🤖 Multi-Agent mode: {use_multi_agent}")
-        print(f"👔 Boss Agent mode (24h planning): {use_boss_agent}")
 
         simulator = BatteryROISimulator(
             battery_capacity_kwh=data['battery_capacity_kwh'],
