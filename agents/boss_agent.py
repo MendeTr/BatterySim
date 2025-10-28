@@ -401,6 +401,23 @@ class BossAgent:
                 print(f"\n⚠️  OVERRIDE: Actual consumption >> forecast, emergency discharge!")
             return self._emergency_override(context)
 
+        # Calculate reserve requirement properly (needed for BossDecision)
+        reserve_req = self.reserve_calc.calculate_reserve(
+            timestamp=context.timestamp,
+            current_soc_kwh=context.soc_kwh
+        )
+
+        # Allocate capacity
+        capacity_alloc = self.reserve_calc.allocate_capacity(
+            reserve_requirement=reserve_req,
+            total_capacity_kwh=context.capacity_kwh,
+            current_soc_kwh=context.soc_kwh,
+            min_soc_kwh=context.min_soc_kwh,
+            max_charge_kw=context.max_charge_kw,
+            max_discharge_kw=context.max_discharge_kw,
+            estimated_arbitrage_value_sek=50.0
+        )
+
         # Get planned action for this hour
         planned_charge = self.daily_plan.charge_schedule[hour_of_day]
         planned_discharge = self.daily_plan.discharge_schedule[hour_of_day]
@@ -408,62 +425,30 @@ class BossAgent:
         # Execute plan
         if planned_charge > 0.5:
             # Plan says: CHARGE
-            reasoning = f"24h Plan: Charge {planned_charge:.1f} kWh (cheap hour). {self.daily_plan.reasoning}"
+            reasoning = f"24h Plan: Charge {planned_charge:.1f} kWh (cheap hour)"
 
             return BossDecision(
                 action=AgentAction.CHARGE,
-                kwh=planned_charge,
+                kwh=min(planned_charge, capacity_alloc.max_charge_this_hour_kwh),
                 chosen_agent="DailyOptimizer",
                 all_recommendations=[],
-                reserve_requirement=ReserveRequirement(
-                    required_reserve_kwh=self.daily_plan.soc_schedule[hour_of_day],
-                    risk_level="MEDIUM",
-                    reasoning="24h plan execution",
-                    percentile_used=95
-                ),
-                capacity_allocation=CapacityAllocation(
-                    total_capacity_kwh=context.capacity_kwh,
-                    current_soc_kwh=context.soc_kwh,
-                    peak_shaving_reserve_kwh=10.0,
-                    available_for_arbitrage_kwh=0.0,
-                    can_charge=True,
-                    can_discharge=False,
-                    max_charge_this_hour_kwh=planned_charge,
-                    max_discharge_this_hour_kwh=0.0,
-                    opportunity_cost_sek=0.0,
-                    reasoning="Executing 24h plan"
-                ),
+                reserve_requirement=reserve_req,
+                capacity_allocation=capacity_alloc,
                 opportunity_cost_sek=0.0,
                 reasoning=reasoning
             )
 
         elif planned_discharge > 0.5:
             # Plan says: DISCHARGE
-            reasoning = f"24h Plan: Discharge {planned_discharge:.1f} kWh (peak shaving). {self.daily_plan.reasoning}"
+            reasoning = f"24h Plan: Discharge {planned_discharge:.1f} kWh (peak shaving)"
 
             return BossDecision(
                 action=AgentAction.DISCHARGE,
-                kwh=planned_discharge,
+                kwh=min(planned_discharge, capacity_alloc.max_discharge_this_hour_kwh),
                 chosen_agent="DailyOptimizer",
                 all_recommendations=[],
-                reserve_requirement=ReserveRequirement(
-                    required_reserve_kwh=self.daily_plan.soc_schedule[hour_of_day],
-                    risk_level="MEDIUM",
-                    reasoning="24h plan execution",
-                    percentile_used=95
-                ),
-                capacity_allocation=CapacityAllocation(
-                    total_capacity_kwh=context.capacity_kwh,
-                    current_soc_kwh=context.soc_kwh,
-                    peak_shaving_reserve_kwh=10.0,
-                    available_for_arbitrage_kwh=0.0,
-                    can_charge=False,
-                    can_discharge=True,
-                    max_charge_this_hour_kwh=0.0,
-                    max_discharge_this_hour_kwh=planned_discharge,
-                    opportunity_cost_sek=0.0,
-                    reasoning="Executing 24h plan"
-                ),
+                reserve_requirement=reserve_req,
+                capacity_allocation=capacity_alloc,
                 opportunity_cost_sek=0.0,
                 reasoning=reasoning
             )
