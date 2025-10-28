@@ -305,8 +305,8 @@ class BossAgent:
             # Note: BatteryContext doesn't have solar_forecast yet - use current solar as simple forecast
             solar_now = context.solar_production_kw if hasattr(context, 'solar_production_kw') else 0.0
 
-            # Get cost parameters from reserve calculator's value calculator
-            value_calc = self.reserve_calc.analyzer.df.iloc[0] if hasattr(self.reserve_calc, 'analyzer') else None
+            # Get cost parameters from peak shaving agent's value calculator (set by frontend)
+            value_calc = self.peak_shaving.value_calculator
 
             inputs = DailyPlanInput(
                 consumption_forecast=context.consumption_forecast[:24] if context.consumption_forecast else [context.avg_consumption_kw] * 24,
@@ -318,13 +318,13 @@ class BossAgent:
                 max_charge_kw=context.max_charge_kw,
                 max_discharge_kw=context.max_discharge_kw,
                 efficiency=context.efficiency,
-                grid_fee_sek_kwh=0.42,  # Default Swedish grid fee (will be updated from simulator)
-                energy_tax_sek_kwh=0.40,  # Default Swedish energy tax
-                vat_rate=0.25,  # Swedish VAT rate
-                effect_tariff_sek_kw_month=60.0,  # Default effect tariff
+                grid_fee_sek_kwh=value_calc.grid_fee,  # From frontend user input
+                energy_tax_sek_kwh=value_calc.energy_tax,  # From frontend user input
+                vat_rate=value_calc.vat_rate,  # From frontend user input
+                effect_tariff_sek_kw_month=value_calc.effect_tariff,  # From frontend user input
                 current_peak_threshold_kw=context.peak_threshold_kw,
-                peak_reserve_kwh=10.0,  # Reserve 10 kWh for peaks
-                is_measurement_hour=[6 <= h <= 23 for h in range(24)]  # E.ON hours
+                peak_reserve_kwh=10.0,  # Algorithm parameter (reasonable default)
+                is_measurement_hour=[6 <= h <= 23 for h in range(24)]  # E.ON measurement hours
             )
 
             # Solve optimization
