@@ -104,7 +104,7 @@
                 vat_rate: 0.25,
                 solar_capacity_kwp: 0,
                 enable_arbitrage: true,
-                use_gpt_arbitrage: false,
+                // use_gpt_arbitrage removed - Boss Agent with 24h LP optimization is now default
                 stodtjanster_revenue_sek_year: 0
             });
 
@@ -492,25 +492,13 @@
                                         onChange={(e) => setConfig({...config, enable_arbitrage: e.target.checked})}
                                         className="w-4 h-4 text-purple-600 bg-gray-100 border-gray-300 rounded focus:ring-purple-500"
                                     />
-                                    <span className="text-sm">Aktivera arbitrage</span>
-                                </label>
-                                
-                                {config.enable_arbitrage && (
-                                    <label className="flex items-center space-x-3 ml-6">
-                                        <input
-                                            type="checkbox"
-                                            checked={config.use_gpt_arbitrage}
-                                            onChange={(e) => setConfig({...config, use_gpt_arbitrage: e.target.checked})}
-                                            className="w-4 h-4 text-purple-600 bg-gray-100 border-gray-300 rounded focus:ring-purple-500"
-                                        />
-                                        <span className="text-sm">
-                                            🤖 Använd GPT AI för smartare beslut
-                                            <span className="text-xs text-gray-500 block">
-                                                Kräver OpenAI API-nyckel (sätt OPENAI_API_KEY miljövariabel)
-                                            </span>
+                                    <span className="text-sm">
+                                        Aktivera arbitrage
+                                        <span className="text-xs text-gray-500 block">
+                                            Använder Boss Agent med 24h LP-optimering för bästa resultat
                                         </span>
-                                    </label>
-                                )}
+                                    </span>
+                                </label>
                             </div>
                         </div>
 
