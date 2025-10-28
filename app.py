@@ -149,7 +149,9 @@ def simulate_battery():
 
         # Check if multi-agent mode is requested
         use_multi_agent = data.get('use_multi_agent', False)
+        use_boss_agent = data.get('use_boss_agent', True)  # DEFAULT TO TRUE (24h planning enabled)
         print(f"🤖 Multi-Agent mode: {use_multi_agent}")
+        print(f"👔 Boss Agent mode (24h planning): {use_boss_agent}")
 
         simulator = BatteryROISimulator(
             battery_capacity_kwh=data['battery_capacity_kwh'],
@@ -159,6 +161,7 @@ def simulate_battery():
             battery_lifetime_years=data.get('battery_lifetime_years', 15),
             use_gpt_arbitrage=use_gpt,
             use_multi_agent=use_multi_agent,
+            use_boss_agent=use_boss_agent,  # Enable Boss Agent with 24h planning
             progress_callback=update_progress
         )
         
