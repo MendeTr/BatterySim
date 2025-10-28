@@ -117,13 +117,130 @@ class DailyOptimizer:
             inputs.is_measurement_hour = [6 <= h <= 23 for h in range(hours)]
 
         try:
-            # Use simplified heuristic approach for now (scipy linprog has limitations for this problem)
-            # TODO: Upgrade to pulp/cvxpy for proper MIP when ready
-            return self._optimize_heuristic(inputs)
+            # Try LP/MIP solver first (if pulp is available)
+            # Falls back to heuristic if pulp not installed
+            return self._optimize_with_pulp(inputs)
 
         except Exception as e:
             # Fallback to simple rule-based if optimization fails
             return self._fallback_plan(inputs, error_msg=str(e))
+
+    def _optimize_with_pulp(self, inputs: DailyPlanInput) -> DailyPlanOutput:
+        """
+        Optimal 24h battery schedule using Linear Programming (pulp).
+
+        This finds the TRUE optimal solution (not heuristic approximation).
+        Falls back to heuristic if pulp is not installed.
+
+        Install pulp: pip install pulp
+
+        Args:
+            inputs: 24h optimization inputs
+
+        Returns:
+            Optimal battery schedule
+        """
+        try:
+            import pulp
+        except ImportError:
+            # pulp not installed, fall back to heuristic
+            return self._optimize_heuristic(inputs)
+
+        hours = 24
+
+        # Calculate total cost per kWh (spot + grid_fee + energy_tax) * (1 + VAT)
+        total_price = [
+            (inputs.price_forecast[h] + inputs.grid_fee_sek_kwh + inputs.energy_tax_sek_kwh) * (1 + inputs.vat_rate)
+            for h in range(hours)
+        ]
+
+        # Decision variables
+        charge = [pulp.LpVariable(f"charge_{h}", lowBound=0, upBound=inputs.max_charge_kw) for h in range(hours)]
+        discharge = [pulp.LpVariable(f"discharge_{h}", lowBound=0, upBound=inputs.max_discharge_kw) for h in range(hours)]
+        soc = [pulp.LpVariable(f"soc_{h}", lowBound=inputs.min_soc_kwh, upBound=inputs.capacity_kwh) for h in range(hours)]
+        grid_import = [pulp.LpVariable(f"grid_{h}", lowBound=0) for h in range(hours)]
+        peak = pulp.LpVariable("peak", lowBound=0)  # Max grid import during E.ON hours
+
+        # Create optimization problem
+        prob = pulp.LpProblem("Battery_24h_Optimization", pulp.LpMinimize)
+
+        # Objective: Minimize total cost (energy + peak penalty)
+        total_energy_cost = pulp.lpSum([grid_import[h] * total_price[h] for h in range(hours)])
+        peak_penalty = peak * self.peak_penalty_multiplier
+        prob += total_energy_cost + peak_penalty, "Total_Cost"
+
+        # Constraints
+        for h in range(hours):
+            # Energy balance: grid_import + discharge - charge + solar = consumption
+            net_load = inputs.consumption_forecast[h] - inputs.solar_forecast[h]
+            prob += grid_import[h] == net_load - discharge[h] + charge[h], f"EnergyBalance_{h}"
+
+            # SOC evolution
+            if h == 0:
+                prob += soc[h] == inputs.current_soc_kwh + charge[h] * inputs.efficiency - discharge[h], f"SOC_{h}"
+            else:
+                prob += soc[h] == soc[h-1] + charge[h] * inputs.efficiency - discharge[h], f"SOC_{h}"
+
+            # No charging during E.ON measurement hours (06-23)
+            if inputs.is_measurement_hour[h]:
+                prob += charge[h] == 0, f"NoChargeDuringEON_{h}"
+
+                # Track peak during E.ON hours
+                prob += peak >= grid_import[h], f"PeakTracking_{h}"
+
+                # Reserve capacity during E.ON hours (ensure enough SOC for peak shaving)
+                prob += soc[h] >= inputs.min_soc_kwh + inputs.peak_reserve_kwh, f"ReserveCapacity_{h}"
+
+        # Solve
+        prob.solve(pulp.PULP_CBC_CMD(msg=0))  # Silent solver
+
+        # Check if optimal solution found
+        if prob.status != pulp.LpStatusOptimal:
+            # Optimization failed, fall back to heuristic
+            return self._optimize_heuristic(inputs)
+
+        # Extract solution
+        charge_schedule = [charge[h].varValue for h in range(hours)]
+        discharge_schedule = [discharge[h].varValue for h in range(hours)]
+        soc_schedule = [soc[h].varValue for h in range(hours)]
+        grid_import_schedule = [grid_import[h].varValue for h in range(hours)]
+        peak_kw = peak.varValue
+
+        # Calculate expected cost
+        expected_cost = sum(grid_import_schedule[h] * total_price[h] for h in range(hours))
+
+        # Calculate savings (vs baseline with no battery)
+        baseline_cost = sum(
+            max(0, inputs.consumption_forecast[h] - inputs.solar_forecast[h]) * total_price[h]
+            for h in range(hours)
+        )
+        expected_savings = baseline_cost - expected_cost
+
+        # Count charging opportunities used
+        charging_hours = sum(1 for h in range(hours) if charge_schedule[h] > 0.5)
+        discharging_hours = sum(1 for h in range(hours) if discharge_schedule[h] > 0.5)
+        total_charge = sum(charge_schedule)
+        total_discharge = sum(discharge_schedule)
+
+        # Build reasoning
+        reasoning = (
+            f"LP-optimized 24h plan: Charge {total_charge:.1f} kWh ({charging_hours} hours), "
+            f"discharge {total_discharge:.1f} kWh ({discharging_hours} hours). "
+            f"Expected peak: {peak_kw:.1f} kW (target <5 kW). "
+            f"Savings: {expected_savings:.0f} SEK over 24h."
+        )
+
+        return DailyPlanOutput(
+            charge_schedule=charge_schedule,
+            discharge_schedule=discharge_schedule,
+            soc_schedule=soc_schedule,
+            grid_import_schedule=grid_import_schedule,
+            expected_cost=expected_cost,
+            expected_peak_kw=peak_kw,
+            expected_savings=expected_savings,
+            optimization_status="optimal",
+            reasoning=reasoning
+        )
 
     def _optimize_heuristic(self, inputs: DailyPlanInput) -> DailyPlanOutput:
         """

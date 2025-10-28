@@ -284,6 +284,47 @@ class BossAgent:
 
         return context  # For now, return as-is - agents check capacity_allocation
 
+    def _create_consumption_forecast(self, context: BatteryContext) -> List[float]:
+        """
+        Create consumption forecast using historical hourly patterns.
+
+        Better than flat average - captures evening peak patterns using historical P75.
+        If context already has a forecast, use it. Otherwise, build from historical stats.
+
+        Args:
+            context: Current battery context
+
+        Returns:
+            24-hour consumption forecast (kW)
+        """
+        # If context already has a good forecast, use it
+        if context.consumption_forecast and len(context.consumption_forecast) >= 24:
+            return context.consumption_forecast[:24]
+
+        # Otherwise, build forecast from historical patterns
+        forecast = []
+        is_weekend = context.timestamp.dayofweek in [5, 6]
+        day_type = DayType.WEEKEND if is_weekend else DayType.WEEKDAY
+
+        # Get current hour to build forecast from current time onwards
+        current_hour = context.hour
+
+        for offset in range(24):
+            # Calculate the hour of day for this forecast point
+            hour_of_day = (current_hour + offset) % 24
+
+            # Get historical statistics for this hour
+            stats = self.analyzer.get_stats(hour_of_day, day_type)
+
+            if stats:
+                # Use 75th percentile (conservative - better to over-reserve than under-reserve)
+                forecast.append(stats.p75_kw)
+            else:
+                # No historical data for this hour, use monthly average
+                forecast.append(context.avg_consumption_kw)
+
+        return forecast
+
     def _create_daily_plan(self, context: BatteryContext) -> Optional[DailyPlanOutput]:
         """
         Create 24-hour optimization plan (Sigenergy approach).
@@ -308,8 +349,11 @@ class BossAgent:
             # Get cost parameters from peak shaving agent's value calculator (set by frontend)
             value_calc = self.peak_shaving.value_calculator
 
+            # Get improved consumption forecast (uses historical P75 instead of flat average)
+            consumption_forecast = self._create_consumption_forecast(context)
+
             inputs = DailyPlanInput(
-                consumption_forecast=context.consumption_forecast[:24] if context.consumption_forecast else [context.avg_consumption_kw] * 24,
+                consumption_forecast=consumption_forecast,
                 solar_forecast=[solar_now] * 24,  # TODO: Add proper solar forecasting later
                 price_forecast=context.spot_forecast[:24] if context.spot_forecast else [context.spot_price_sek_kwh] * 24,
                 current_soc_kwh=context.soc_kwh,
